@@ -21,11 +21,10 @@ This project uses and ESP32-based controller, along with stepper motors and ends
 1. Print 3x Motor Bracket, Motor Cover, Endstop Clip in PLA or PETG (or other hard-plastic).
 1. Print 3x Coupler, Damper and 6x End Holder in TPU (for vibration damping - PLA will work in a pinch though).
 1. Tune your Buck convertor to output 3.3v with your DC power supply.
-1. Assemble the circuitboard per the schematic (note that it is mirrored 4-ways - you only need one).
-    * The Engage pins of Stepper Drivers should face upwards (up is the side with the capacitor).
-    * The 3v3 and GND pins (and USB port) of the ESP32 board should face downwards.
-    * Join the M0, M1 (and M2 if present on your drivers) to the EN (Engage) pin to set your stepping mode (more stepping = less vibration but higher-pitch operation).
-    * Lookup your driver to find out the setting (you will need this below).
+1. Assemble the circuitboard per the schematic.
+    * The Engage pins of Stepper Drivers should face toward the top of the board (the top is the side with the capacitor).
+    * The 3v3 and VIN pins (and USB port) of the ESP32 board should face downwards (the ESP32 is on the back of the board).
+    * (optional) Join the M0, M1 (and M2 if present on your drivers) to 3.3v to set your MicroStepping mode (more microsteps = less vibration but higher-pitch operation). Lookup your driver to find out the MicroStepping setting (you will need this below).
 1. Tune the stepper motor current limit (Try this guide: https://www.makerguides.com/a4988-stepper-motor-driver-arduino-tutorial/).
     * Using USB for power (do not plug in the power supply for this).
 1. Set the ventNames, microStepping, WiFi parameters in the firmware. Check pin numbers, speed settings (stepDelay) and limit (fullyOpen)

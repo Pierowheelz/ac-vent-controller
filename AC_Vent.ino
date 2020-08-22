@@ -118,7 +118,7 @@ void setup()
     pinMode(dirPins[i], OUTPUT);      // set stepper pin mode
     pinMode(stepper[i], OUTPUT);      // set stepper pin mode
     pinMode(stepperPower[i], OUTPUT);      // set stepperPower pin mode
-    digitalWrite(stepperPower[i], LOW);
+    digitalWrite(stepperPower[i], HIGH);
     pinMode(endStop[i], INPUT);      // set endstop pin mode
   } //end for loop
 
