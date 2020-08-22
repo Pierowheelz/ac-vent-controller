@@ -1,4 +1,7 @@
 /*
+ *
+ * PRODUCTION VERSION - DO NOT COMMIT!!!
+ *
  #ESP32 controller for AC Vents
  Peter Wells - March 2020
 
@@ -35,11 +38,11 @@ const int stepper[] = { //Pins controlling stepper steps
 const int stepperPower[] = { //Pins controlling stepper power
   4,
   19,
-  34
+  32
 };
 const int endStop[] = { //Pins controlling stepper steps
   14,
-  12,
+  27,
   13
 };
 const char* ventNames[] = { //Pins controlling stepper steps
@@ -55,7 +58,7 @@ const int microStepping = 8; //1=no microStepping, 32=max (on DRV8825)
 const int fullyOpen = 600;
 
 //Speed of the motor (in Microseconds)
-const int stepDelay = 2000; //delay between steps (125 = fastest, 4000 = pretty slow)
+const int stepDelay = 2000; //delay between steps (1000 = fastest, 5000 = pretty slow)
 
 // Wifi / Network setings
 const char* ssid1    = "SSID"; // Primary WiFi network
@@ -82,7 +85,7 @@ WiFiMulti wifiMulti;
 WiFiServer server(80);
 
 //function defaults
-void spinMotor( int motor=0, int dir=LOW, int dist=1, bool skipPower=0 );
+void spinMotor( int motor=0, int dir=LOW, int dist=1 );
 void findZero( int motor=0, int dir=LOW, int posMoved=0 );
 void ensureOpen( int closeMotor=0, int openStatus=0 );
 //end function defaults
@@ -343,10 +346,8 @@ void moveMotorTo( int motor, int pos ){
 /*
  * Spin a motor a relative amount (in microSteps)
  */
-void spinMotor( int motor, int dir, int dist, bool skipPower ){
-  if( !skipPower ) {
-    digitalWrite(stepperPower[motor], HIGH);
-  }
+void spinMotor( int motor, int dir, int dist ){
+  digitalWrite(stepperPower[motor], LOW);
   digitalWrite(dirPins[motor], dir);
   if( 0 == dist ){
     return;
@@ -355,30 +356,33 @@ void spinMotor( int motor, int dir, int dist, bool skipPower ){
   if( closeVent == dir ){
     addAmount = -1;
   }
+  
+  Serial.print("step delay: ");
+  Serial.println(stpDelay);
 
   for (int i=0; i < dist; i++){
+    Serial.println("HIGH");
     digitalWrite(stepper[motor], HIGH);
     stepperPos[motor] += addAmount;
     delayMicroseconds(stpDelay);
-    digitalWrite(stepper[motor],LOW );
+    Serial.println("LOW");
+    digitalWrite(stepper[motor], LOW );
     delayMicroseconds(stpDelay);
     //safety - stop immediately and reset zero if endstop is pressed
     if( i > 50 && closeVent == dir && LOW == digitalRead(endStop[motor]) ){
+      Serial.println("Endstop triggered - phantom checking...");
       delay(1);
       if( LOW == digitalRead(endStop[motor]) ){ //might be phantom trigger (long cables)
         Serial.println("Unexpectedly hit endstop.");
         zeroMotor( motor );
-        if( !skipPower ) { //the break seems to end the entire function sometimes, so len't make sure the motor is off
-          digitalWrite(stepperPower[motor], LOW);
-        }
+         //the break seems to end the entire function sometimes, so len't make sure the motor is off
+        digitalWrite(stepperPower[motor], HIGH);
         break;
       }
     }
   }
   
-  if( !skipPower ) {
-    digitalWrite(stepperPower[motor], LOW);
-  }
+  digitalWrite(stepperPower[motor], HIGH);
   Serial.print("Current Position: ");
   Serial.println(stepperPos[motor]);
 }
@@ -392,7 +396,10 @@ void zeroMotor( int motor ){
 void findZero( int motor, int dir, int posMoved ){
   Serial.print("FindZero called for motor: ");
   Serial.println(motor);
-  digitalWrite(stepperPower[motor], HIGH);
+  digitalWrite(stepperPower[motor], LOW);
+  
+  Serial.print("step delay: ");
+  Serial.println(stpDelay);
 
   digitalWrite(dirPins[motor], dir);
   while( HIGH == digitalRead(endStop[motor]) && posMoved < (fullyOpenMicro + 100) ){
@@ -417,7 +424,7 @@ void findZero( int motor, int dir, int posMoved ){
   Serial.print(" / ");
   Serial.println(fullyOpenMicro);
 
-  digitalWrite(stepperPower[motor], LOW);
+  digitalWrite(stepperPower[motor], HIGH);
   zeroMotor( motor );
 }
 
