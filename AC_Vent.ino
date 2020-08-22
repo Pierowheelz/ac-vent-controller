@@ -16,27 +16,31 @@
 #include <WiFiMulti.h>
 #include <EEPROM.h>
 
+
+// ---------------------------------------------------------------------------------------------------------------------
+// -- START USER CONFIGURATION --
+// ---------------------------------------------------------------------------------------------------------------------
 #define NUM_MOTORS 3
 
 const int dirPins[] = { //Pins controlling direction of stepper
   15, //Peter
-  26, //Burton
-  14 //guest
+  5, //Burton
+  25 //guest
 };
 const int stepper[] = { //Pins controlling stepper steps
   2,
-  25,
-  12
+  18,
+  33
 };
 const int stepperPower[] = { //Pins controlling stepper power
   4,
-  33,
-  13
+  19,
+  34
 };
 const int endStop[] = { //Pins controlling stepper steps
-  5,
-  23,
-  34
+  14,
+  12,
+  13
 };
 const char* ventNames[] = { //Pins controlling stepper steps
   "Peter's Room",
@@ -45,29 +49,34 @@ const char* ventNames[] = { //Pins controlling stepper steps
 };
 
 // Current microstepping setting (no need to vary stepDelay or fullyOpen)
-const int microStepping = 8;
+const int microStepping = 8; //1=no microStepping, 32=max (on DRV8825)
 
-// Amount in steps (200 per rotation) to open the vent
+// Amount in steps (200 per rotation) to open the vent (ignoring microStepping)
 const int fullyOpen = 600;
 
 //Speed of the motor (in Microseconds)
 const int stepDelay = 2000; //delay between steps (125 = fastest, 4000 = pretty slow)
 
 // Wifi / Network setings
-const char* ssid1    = "SSID"; //primary
-const char* ssid2    = "BACKUP_SSID"; //backup
-const char* password = "wifipassword";
+const char* ssid1    = "SSID"; // Primary WiFi network
+const char* password1 = "wifipassword";
+const char* ssid2    = ""; // Optional backup WiFi network (blank to disable)
+const char* password2 = "";
 
 IPAddress local_IP(192, 168, 2, 110);
 IPAddress gateway(192, 168, 2, 1);
 IPAddress subnet(255, 255, 255, 0);
+// ---------------------------------------------------------------------------------------------------------------------
+// -- END USER CONFIGURATION --
+// ---------------------------------------------------------------------------------------------------------------------
 
 // Switch trigger values (invert if switch triggers on vent open)
 const int openVent = LOW;
 const int closeVent = HIGH;
 
-// Current position of stepper motors
-int stepperPos[NUM_MOTORS];
+int stepperPos[NUM_MOTORS]; // Current position of stepper motors
+int fullyOpenMicro = fullyOpen * microStepping; // MicroStepping compensated fully open position (in steps)
+int stpDelay = stepDelay / microStepping; //set delay compensating for MicroStepping
 
 WiFiMulti wifiMulti;
 WiFiServer server(80);
@@ -81,14 +90,14 @@ void ensureOpen( int closeMotor=0, int openStatus=0 );
 void setup()
 {
   Serial.begin(115200);
-  // initialize EEPROM with predefined size
+  // initialize EEPROM with predefined size (for power outage recovery of position)
   EEPROM.begin(NUM_MOTORS);
   
   for (int i=0; i < NUM_MOTORS; i++){
     //recover saved state from EEPROM
     int savedPercent = EEPROM.read(i);
     if( savedPercent <= 100 ){
-      float savedPos = (savedPercent / 100.0) * float(fullyOpen);
+      float savedPos = (savedPercent / 100.0) * float(fullyOpenMicro);
       stepperPos[i] = round(savedPos); //coverting float to int
       Serial.print("Recovered motor ");
       Serial.print(i);
@@ -97,7 +106,7 @@ void setup()
       Serial.print("%, ");
       Serial.print(stepperPos[i]);
       Serial.print(" / ");
-      Serial.println(fullyOpen);
+      Serial.println(fullyOpenMicro);
     } else {
       stepperPos[i] = -1;
     }
@@ -113,8 +122,10 @@ void setup()
   // We start by connecting to a WiFi network
   Serial.println();
   Serial.println("Connecting to WiFi ");
-  //wifiMulti.addAP(ssid1, password);
-  wifiMulti.addAP(ssid2, password);
+  wifiMulti.addAP(ssid1, password1);
+  if( "" != ssid2 ){
+      wifiMulti.addAP(ssid2, password2);
+  }
 
   if (!WiFi.config(local_IP, gateway, subnet)) {
     Serial.println("STA Failed to configure");
@@ -178,9 +189,9 @@ void loop(){
                 Serial.print("StepperPos: ");
                 Serial.println(stepperPos[i]);
                 Serial.print("EndPos: ");
-                Serial.println(fullyOpen);
+                Serial.println(fullyOpenMicro);
                 Serial.print("Ratio: ");
-                float ratio = stepperPos[i] / float(fullyOpen);
+                float ratio = stepperPos[i] / float(fullyOpenMicro);
                 Serial.println(ratio);
                 pos[i] = ratio * 100;
               }
@@ -258,15 +269,15 @@ void loop(){
                 findZero( motorNum, closeVent );
                 break;
               case 3: //open completely (zero, if required, then open)
-                moveMotorTo( motorNum, fullyOpen );
+                moveMotorTo( motorNum, fullyOpenMicro );
                 break;
               case 4: //open 50% (zero, if required, then open)
-                ensureOpen( motorNum, (fullyOpen/2) );
-                moveMotorTo( motorNum, (fullyOpen/2) );
+                ensureOpen( motorNum, (fullyOpenMicro/2) );
+                moveMotorTo( motorNum, (fullyOpenMicro/2) );
                 break;
               case 5: //open 25% (zero, if required, then open)
-                ensureOpen( motorNum, (fullyOpen/4) );
-                moveMotorTo( motorNum, (fullyOpen/4) );
+                ensureOpen( motorNum, (fullyOpenMicro/4) );
+                moveMotorTo( motorNum, (fullyOpenMicro/4) );
                 break;
             }
 
@@ -274,7 +285,7 @@ void loop(){
             bool eepromUpdated = false;
             for (int i=0; i < NUM_MOTORS; i++){
               if( -1 != stepperPos[i] ){ //ignore unknown positions
-                float percent = (stepperPos[i] / float(fullyOpen)) * 100.0;
+                float percent = (stepperPos[i] / float(fullyOpenMicro)) * 100.0;
                 int intRatio = percent + 0.5; //round up to whole number
                 int lastVal = EEPROM.read(i);
                 if( lastVal != intRatio ){ //only write if it has changed (100,000 write limit on EEPROM)
@@ -297,6 +308,9 @@ void loop(){
 //  Serial.println(digitalRead(endStop[0]));
 }
 
+/*
+ * Move a motor to an absolute position (in microSteps)
+ */
 void moveMotorTo( int motor, int pos ){
   int motorPos = stepperPos[motor];
   
@@ -326,6 +340,9 @@ void moveMotorTo( int motor, int pos ){
   Serial.println(stepperPos[motor]);
 }
 
+/*
+ * Spin a motor a relative amount (in microSteps)
+ */
 void spinMotor( int motor, int dir, int dist, bool skipPower ){
   if( !skipPower ) {
     digitalWrite(stepperPower[motor], HIGH);
@@ -339,15 +356,12 @@ void spinMotor( int motor, int dir, int dist, bool skipPower ){
     addAmount = -1;
   }
 
-  int sDelay = stepDelay / microStepping;
-  int sDist = dist * microStepping;
-  
   for (int i=0; i < dist; i++){
     digitalWrite(stepper[motor], HIGH);
     stepperPos[motor] += addAmount;
-    delayMicroseconds(stepDelay);
+    delayMicroseconds(stpDelay);
     digitalWrite(stepper[motor],LOW );
-    delayMicroseconds(stepDelay);
+    delayMicroseconds(stpDelay);
     //safety - stop immediately and reset zero if endstop is pressed
     if( i > 50 && closeVent == dir && LOW == digitalRead(endStop[motor]) ){
       delay(1);
@@ -381,17 +395,17 @@ void findZero( int motor, int dir, int posMoved ){
   digitalWrite(stepperPower[motor], HIGH);
 
   digitalWrite(dirPins[motor], dir);
-  while( HIGH == digitalRead(endStop[motor]) && posMoved < (fullyOpen + 100) ){
+  while( HIGH == digitalRead(endStop[motor]) && posMoved < (fullyOpenMicro + 100) ){
     digitalWrite(stepper[motor], HIGH);
-    delayMicroseconds(stepDelay);
+    delayMicroseconds(stpDelay);
     digitalWrite(stepper[motor],LOW );
-    delayMicroseconds(stepDelay);
-    posMoved += 1; //switch likely failed if this exceeds fullyOpen
+    delayMicroseconds(stpDelay);
+    posMoved += 1; //switch likely failed if this exceeds fullyOpenMicro
   }
 
   //handle issues with long cables causing phanton triggers on endstop
   delay(1);
-  if( HIGH == digitalRead(endStop[motor]) && posMoved < fullyOpen ){
+  if( HIGH == digitalRead(endStop[motor]) && posMoved < fullyOpenMicro ){
     Serial.println("Phantom trigger detected - loop again");
     findZero( motor, dir, posMoved );
   }
@@ -401,7 +415,7 @@ void findZero( int motor, int dir, int posMoved ){
   Serial.print("PosMoved: ");
   Serial.print(posMoved);
   Serial.print(" / ");
-  Serial.println(fullyOpen);
+  Serial.println(fullyOpenMicro);
 
   digitalWrite(stepperPower[motor], LOW);
   zeroMotor( motor );
@@ -421,7 +435,7 @@ void ensureOpen( int closeMotor, int openStatus ){
   Serial.print("Total Open: ");
   Serial.println(openStatus);
 
-  float ratio = openStatus / float(fullyOpen);
+  float ratio = openStatus / float(fullyOpenMicro);
   int openPercent = ratio * 100;
   Serial.print("Open Percent: ");
   Serial.println(openPercent);
@@ -430,7 +444,7 @@ void ensureOpen( int closeMotor, int openStatus ){
     // Open other vents now - loop through and find first vent which isn't this one
     for (int i=0; i < NUM_MOTORS; i++){
       if( i != closeMotor ){
-        moveMotorTo( i, fullyOpen );
+        moveMotorTo( i, fullyOpenMicro );
         break;
       }
     }
