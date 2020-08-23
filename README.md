@@ -2,7 +2,7 @@
 This project uses and ESP32-based controller, along with stepper motors and endstop switches (from a 3d printer kit) to control the circular Air Conditioner vents used in many ducted systems.
 
 ## Parts Required
-* ESP32 Dev Board (WROOM 32)
+* ESP32 Dev Board (NodeMCU-ESP32 DEVKITV1 - 30 pins - based on ESP-WROOM-32)
 * 3D Printer Kit (from ebay or Aliexpress)
     * 3x Nema 17 stepper motors + cables
     * 3x Nema 17 mounting brackets
