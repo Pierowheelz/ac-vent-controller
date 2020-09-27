@@ -68,19 +68,22 @@ IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress primaryDNS(8, 8, 8, 8); //optional
 IPAddress secondaryDNS(1, 1, 1, 1); //optional
+
+
+WiFiServer server(80); //WebUI port number (default 80)
+
+// Switch trigger values (invert if using normally-closed switch)
+const int openVent = LOW;
+const int closeVent = HIGH;
+
 // ---------------------------------------------------------------------------------------------------------------------
 // -- END USER CONFIGURATION --
 // ---------------------------------------------------------------------------------------------------------------------
 
-// Switch trigger values (invert if switch triggers on vent open)
-const int openVent = LOW;
-const int closeVent = HIGH;
 
 int stepperPos[NUM_MOTORS]; // Current position of stepper motors
 int fullyOpenMicro = fullyOpen * microStepping; // MicroStepping compensated fully open position (in steps)
 int stpDelay = stepDelay / microStepping; //set delay compensating for MicroStepping
-
-WiFiServer server(80);
 
 //function defaults
 void spinMotor( int motor=0, int dir=LOW, int dist=1 );
@@ -90,58 +93,60 @@ void ensureOpen( int closeMotor=0, int openStatus=0 );
 
 void setup()
 {
-  Serial.begin(115200);
-  // initialize EEPROM with predefined size (for power outage recovery of position)
-  EEPROM.begin(NUM_MOTORS);
+    Serial.begin(115200);
+    // initialize EEPROM with predefined size (for power outage recovery of position)
+    EEPROM.begin(NUM_MOTORS);
+    
+    for (int i=0; i < NUM_MOTORS; i++){
+      //recover saved state from EEPROM
+      int savedPercent = EEPROM.read(i);
+      if( savedPercent <= 100 ){
+        float savedPos = (savedPercent / 100.0) * float(fullyOpenMicro);
+        stepperPos[i] = round(savedPos); //coverting float to int
+        Serial.print("Recovered motor ");
+        Serial.print(i);
+        Serial.print(" state, ");
+        Serial.print(savedPercent);
+        Serial.print("%, ");
+        Serial.print(stepperPos[i]);
+        Serial.print(" / ");
+        Serial.println(fullyOpenMicro);
+      } else {
+        stepperPos[i] = -1;
+      }
   
-  for (int i=0; i < NUM_MOTORS; i++){
-    //recover saved state from EEPROM
-    int savedPercent = EEPROM.read(i);
-    if( savedPercent <= 100 ){
-      float savedPos = (savedPercent / 100.0) * float(fullyOpenMicro);
-      stepperPos[i] = round(savedPos); //coverting float to int
-      Serial.print("Recovered motor ");
-      Serial.print(i);
-      Serial.print(" state, ");
-      Serial.print(savedPercent);
-      Serial.print("%, ");
-      Serial.print(stepperPos[i]);
-      Serial.print(" / ");
-      Serial.println(fullyOpenMicro);
-    } else {
-      stepperPos[i] = -1;
+      //setup pin modes for each motor
+      pinMode(dirPins[i], OUTPUT);      // set stepper pin mode
+      pinMode(stepper[i], OUTPUT);      // set stepper pin mode
+      pinMode(stepperPower[i], OUTPUT);      // set stepperPower pin mode
+      digitalWrite(stepperPower[i], HIGH);
+      pinMode(endStop[i], INPUT);      // set endstop pin mode
+    } //end for loop
+
+    // We start by connecting to a WiFi network
+    Serial.println();
+    Serial.println("Starting WiFi ");
+    if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+        Serial.println("STA Failed to configure");
     }
-
-    //setup pin modes for each motor
-    pinMode(dirPins[i], OUTPUT);      // set stepper pin mode
-    pinMode(stepper[i], OUTPUT);      // set stepper pin mode
-    pinMode(stepperPower[i], OUTPUT);      // set stepperPower pin mode
-    digitalWrite(stepperPower[i], HIGH);
-    pinMode(endStop[i], INPUT);      // set endstop pin mode
-  } //end for loop
-
-  // We start by connecting to a WiFi network
-  Serial.println();
-  Serial.println("Connecting to WiFi ");
-  wifiMulti.addAP(ssid1, password1);
-  if( "" != ssid2 ){
-      wifiMulti.addAP(ssid2, password2);
-  }
-
-  if (!WiFi.config(local_IP, gateway, subnet)) {
-    Serial.println("STA Failed to configure");
-  }
+    
+    Serial.print("Connecting to ");
+    Serial.println(ssid);
   
-  while (wifiMulti.run() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-  Serial.print("WiFi connected to: ");
-  Serial.println(WiFi.SSID());
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-  server.begin();
+    WiFi.begin(ssid, password);
+  
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("");
+    Serial.println("WiFi connected! ");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("ESP Mac Address: ");
+    Serial.println(WiFi.macAddress());
+    
+    server.begin();
 }
 
 void loop(){
