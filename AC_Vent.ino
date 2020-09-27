@@ -1,6 +1,6 @@
 /*
  *
- * PRODUCTION VERSION - DO NOT COMMIT!!!
+ * DEV Version
  *
  #ESP32 controller for AC Vents
  Peter Wells - March 2020
@@ -16,7 +16,6 @@
   Initial version
 */
 #include <WiFi.h>
-#include <WiFiMulti.h>
 #include <EEPROM.h>
 
 
@@ -46,9 +45,9 @@ const int endStop[] = { //Pins controlling stepper steps
   13
 };
 const char* ventNames[] = { //Pins controlling stepper steps
-  "Peter's Room",
-  "Burton's Room",
-  "Guest Room"
+  "Room 1",
+  "Room 2",
+  "Room 3"
 };
 
 // Current microstepping setting (no need to vary stepDelay or fullyOpen)
@@ -61,14 +60,14 @@ const int fullyOpen = 600;
 const int stepDelay = 2000; //delay between steps (1000 = fastest, 5000 = pretty slow)
 
 // Wifi / Network setings
-const char* ssid1    = "SSID"; // Primary WiFi network
-const char* password1 = "wifipassword";
-const char* ssid2    = ""; // Optional backup WiFi network (blank to disable)
-const char* password2 = "";
+const char* ssid    = "SSID"; // Primary WiFi network
+const char* password = "wifipassword";
 
-IPAddress local_IP(192, 168, 2, 110);
-IPAddress gateway(192, 168, 2, 1);
+IPAddress local_IP(192, 168, 1, 100);
+IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
+IPAddress primaryDNS(8, 8, 8, 8); //optional
+IPAddress secondaryDNS(1, 1, 1, 1); //optional
 // ---------------------------------------------------------------------------------------------------------------------
 // -- END USER CONFIGURATION --
 // ---------------------------------------------------------------------------------------------------------------------
@@ -81,7 +80,6 @@ int stepperPos[NUM_MOTORS]; // Current position of stepper motors
 int fullyOpenMicro = fullyOpen * microStepping; // MicroStepping compensated fully open position (in steps)
 int stpDelay = stepDelay / microStepping; //set delay compensating for MicroStepping
 
-WiFiMulti wifiMulti;
 WiFiServer server(80);
 
 //function defaults
@@ -361,11 +359,11 @@ void spinMotor( int motor, int dir, int dist ){
   Serial.println(stpDelay);
 
   for (int i=0; i < dist; i++){
-    Serial.println("HIGH");
+    //Serial.println("HIGH");
     digitalWrite(stepper[motor], HIGH);
     stepperPos[motor] += addAmount;
     delayMicroseconds(stpDelay);
-    Serial.println("LOW");
+    //Serial.println("LOW");
     digitalWrite(stepper[motor], LOW );
     delayMicroseconds(stpDelay);
     //safety - stop immediately and reset zero if endstop is pressed
