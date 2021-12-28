@@ -40,6 +40,35 @@ This project uses and ESP32-based controller, along with stepper motors and ends
 
 Note: There is no security or authentication in this system. Do not open up the port in your Router! For use on your internal network only.
 
+## Usage via Rest API
+Get vents status: `GET http://192.168.2.110/?&t=1`
+
+Sample return:
+```
+{
+	"0": {
+		"name": "Room #1",
+		"pos": 30
+	},
+	"1": {
+		"name": "Room #2",
+		"pos": 60
+	},
+	"2": {
+		"name": "Room #3",
+		"pos": 100
+	}
+}
+```
+
+Open vent `#1` to 100%: `GET http://192.168.2.110/?a=6&t=1&m=0&d=100`
+Here `a` is the operating mode, where mode 6 corresponds to: open to ratio set by &d= (eg. ?d=050:open50%, ?d=000:close, ?d=100:open100%).
+Also, `t` is the response type (1 = JSON).
+And, `m` is the motor number (0-2).
+
+The return format is identical to the 'get status' request.
+
+
 ## Images
 Some images are from an older version.
 
