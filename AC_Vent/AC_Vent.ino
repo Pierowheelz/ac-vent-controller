@@ -3,6 +3,9 @@
  #ESP32 controller for AC Vents
  Peter Wells - March 2020
 
+ Version 1.4.0
+  Startup state determined by endstop status
+
  Version 1.3.0
   Added simple JSON API
 
@@ -17,7 +20,7 @@
   Initial version
 */
 #include <WiFi.h>
-#include <EEPROM.h>
+//#include <EEPROM.h>
 
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -55,7 +58,7 @@ const char* ventNames[] = { //Pins controlling stepper steps
 const int microStepping = 8; //1=no microStepping, 32=max (on DRV8825)
 
 // Amount in steps (200 per rotation) to open the vent (ignoring microStepping)
-const int fullyOpen = 600;
+const int fullyOpen = 650;
 
 //Speed of the motor (in Microseconds)
 const int stepDelay = 2000; //delay between steps (1000 = fastest, 5000 = pretty slow)
@@ -73,7 +76,7 @@ IPAddress secondaryDNS(1, 1, 1, 1); //optional
 // -- END USER CONFIGURATION --
 // ---------------------------------------------------------------------------------------------------------------------
 
-// Switch trigger values (invert if switch triggers on vent open)
+// Motor trigger values (invert if motor spins the wrong direction)
 const int openVent = LOW;
 const int closeVent = HIGH;
 
@@ -93,58 +96,48 @@ void setup()
 {
   Serial.begin(115200);
   // initialize EEPROM with predefined size (for power outage recovery of position)
-  EEPROM.begin(NUM_MOTORS);
+  // EEPROM.begin(NUM_MOTORS);
   
   for (int i=0; i < NUM_MOTORS; i++){
-    //recover saved state from EEPROM
-    int savedPercent = EEPROM.read(i);
-    if( savedPercent <= 100 ){
-      float savedPos = (savedPercent / 100.0) * float(fullyOpenMicro);
-      stepperPos[i] = round(savedPos); //coverting float to int
-      Serial.print("Recovered motor ");
-      Serial.print(i);
-      Serial.print(" state, ");
-      Serial.print(savedPercent);
-      Serial.print("%, ");
-      Serial.print(stepperPos[i]);
-      Serial.print(" / ");
-      Serial.println(fullyOpenMicro);
-    } else {
-      stepperPos[i] = -1;
-    }
-
     //setup pin modes for each motor
     pinMode(dirPins[i], OUTPUT);      // set stepper pin mode
     pinMode(stepper[i], OUTPUT);      // set stepper pin mode
     pinMode(stepperPower[i], OUTPUT);      // set stepperPower pin mode
     digitalWrite(stepperPower[i], HIGH);
     pinMode(endStop[i], INPUT);      // set endstop pin mode
+    
+    // Setup initial Stepper Pos to either 0 or 100% based on whether endstop is triggered
+    stepperPos[i] = fullyOpenMicro; // Default to vent open
+    if( checkEndstopStatus( i, 0 ) ){
+      stepperPos[i] = 0; // Vent is closed
+    }
+   
   } //end for loop
 
-    // We start by connecting to a WiFi network
-    Serial.println();
-    Serial.println("Starting WiFi ");
-    if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-        Serial.println("STA Failed to configure");
-    }
-    
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.println("Starting WiFi ");
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+      Serial.println("STA Failed to configure");
+  }
   
-    WiFi.begin(ssid, password);
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected! ");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("ESP Mac Address: ");
+  Serial.println(WiFi.macAddress());
   
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.println("");
-    Serial.println("WiFi connected! ");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("ESP Mac Address: ");
-    Serial.println(WiFi.macAddress());
-    
-    server.begin();
+  server.begin();
 }
 
 void loop(){
@@ -217,22 +210,22 @@ void loop(){
             }
 
             //save new state to EEPROM after any movement
-            bool eepromUpdated = false;
-            for (int i=0; i < NUM_MOTORS; i++){
-              if( -1 != stepperPos[i] ){ //ignore unknown positions
-                float percent = (stepperPos[i] / float(fullyOpenMicro)) * 100.0;
-                int intRatio = percent + 0.5; //round up to whole number
-                int lastVal = EEPROM.read(i);
-                if( lastVal != intRatio ){ //only write if it has changed (100,000 write limit on EEPROM)
-                  EEPROM.write( i, intRatio );
-                  eepromUpdated = true;
-                }
-              }
-            }
-            if( eepromUpdated ){
-              EEPROM.commit();
-              Serial.println("EEPROM state updated");
-            }
+            // bool eepromUpdated = false;
+            // for (int i=0; i < NUM_MOTORS; i++){
+            //   if( -1 != stepperPos[i] ){ //ignore unknown positions
+            //     float percent = (stepperPos[i] / float(fullyOpenMicro)) * 100.0;
+            //     int intRatio = percent + 0.5; //round up to whole number
+            //     int lastVal = EEPROM.read(i);
+            //     if( lastVal != intRatio ){ //only write if it has changed (100,000 write limit on EEPROM)
+            //       EEPROM.write( i, intRatio );
+            //       eepromUpdated = true;
+            //     }
+            //   }
+            // }
+            // if( eepromUpdated ){
+            //   EEPROM.commit();
+            //   Serial.println("EEPROM state updated");
+            // }
           }
       } else if (c == '\n') {                  // check for newline character,
           if (currentLine.length() == 0) {     // if line is blank it means its the end of the client HTTP request
@@ -492,28 +485,48 @@ void findZero( int motor, int dir, int posMoved ){
   zeroMotor( motor );
 }
 
-// Ensure at least one other vent (ie. total >= 100%) is open before closing
+// Ensure at least one other vent (ie. total >= 70%) is open before closing
 void ensureOpen( int closeMotor, int openStatus ){
-  //work out total open position
-  for (int i=0; i < NUM_MOTORS; i++){
-    if( i != closeMotor ){
-      openStatus += stepperPos[i];
-    }
-  }
-  if( openStatus < 0 ){
-    openStatus = 0;
-  }
-  Serial.print("Total Open: ");
-  Serial.println(openStatus);
+  // //work out total open position
+  // for (int i=0; i < NUM_MOTORS; i++){
+  //   if( i != closeMotor ){
+  //     openStatus += stepperPos[i];
+  //   }
+  // }
+  // if( openStatus < 0 ){
+  //   openStatus = 0;
+  // }
+  // Serial.print("Total Open: ");
+  // Serial.println(openStatus);
 
-  float ratio = openStatus / float(fullyOpenMicro);
-  int openPercent = ratio * 100;
-  Serial.print("Open Percent: ");
-  Serial.println(openPercent);
+  // float ratio = openStatus / float(fullyOpenMicro);
+  // int openPercent = ratio * 100;
+  // Serial.print("Open Percent: ");
+  // Serial.println(openPercent);
   
-  if( openPercent < 100 ){
-    // Open other vents now - loop through and find first vent which isn't this one
-    for (int i=0; i < NUM_MOTORS; i++){
+  // if( openPercent < 70 ){
+  //   // Open other vents now - loop through and find first vent which isn't this one
+  //   for (int i=0; i < NUM_MOTORS; i++){
+  //     if( i != closeMotor ){
+  //       moveMotorTo( i, fullyOpenMicro );
+  //       break;
+  //     }
+  //   }
+  // }
+
+  // New simple method - make sure at least one of the endstops is not depressed
+  bool oneIsOpen = false;
+  for (int i=0; i < NUM_MOTORS; i++){
+    // Setup initial Stepper Pos to either 0 or 100% based on whether endstop is triggered
+    stepperPos[i] = fullyOpenMicro; // Default to vent open
+    if( !checkEndstopStatus( i, 0 ) ){
+      oneIsOpen = true; // Vent is open
+    }
+  } //end for loop
+
+  if( !oneIsOpen ){
+    // Open other vents now - loop through and find last vent which isn't this one
+    for (int i=(NUM_MOTORS-1); i >= 0; i--){
       if( i != closeMotor ){
         moveMotorTo( i, fullyOpenMicro );
         break;
