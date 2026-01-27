@@ -3,8 +3,12 @@
  #ESP32 controller for AC Vents
  Peter Wells - March 2020
 
+ Version 1.5.0
+  Moved configuration to config.h
+  Added WiFi connection management
+
  Version 1.4.0
-  Startup state determined by endstop status
+  Startup state determined by endstop status (rather than EEPROM)
 
  Version 1.3.0
   Added simple JSON API
@@ -20,61 +24,11 @@
   Initial version
 */
 #include <WiFi.h>
-//#include <EEPROM.h>
+#include <esp_task_wdt.h>
+#include "config.h"
 
-
-// ---------------------------------------------------------------------------------------------------------------------
-// -- START USER CONFIGURATION --
-// ---------------------------------------------------------------------------------------------------------------------
-#define NUM_MOTORS 3
-
-const int dirPins[] = { //Pins controlling direction of stepper
-  15, //Peter
-  5, //Burton
-  25 //guest
-};
-const int stepper[] = { //Pins controlling stepper steps
-  2,
-  18,
-  33
-};
-const int stepperPower[] = { //Pins controlling stepper power
-  4,
-  19,
-  32
-};
-const int endStop[] = { //Pins controlling stepper steps
-  14,
-  27,
-  13
-};
-const char* ventNames[] = { //Pins controlling stepper steps
-  "Room #1",
-  "Room #2",
-  "Room #3"
-};
-
-// Current microstepping setting (no need to vary stepDelay or fullyOpen)
-const int microStepping = 8; //1=no microStepping, 32=max (on DRV8825)
-
-// Amount in steps (200 per rotation) to open the vent (ignoring microStepping)
-const int fullyOpen = 650;
-
-//Speed of the motor (in Microseconds)
-const int stepDelay = 2000; //delay between steps (1000 = fastest, 5000 = pretty slow)
-
-// Wifi / Network setings
-const char* ssid    = "SSID"; // Primary WiFi network
-const char* password = "password123";
-
-IPAddress local_IP(192, 168, 2, 110);
-IPAddress gateway(192, 168, 2, 1);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress primaryDNS(192, 168, 1, 90); //optional
-IPAddress secondaryDNS(1, 1, 1, 1); //optional
-// ---------------------------------------------------------------------------------------------------------------------
-// -- END USER CONFIGURATION --
-// ---------------------------------------------------------------------------------------------------------------------
+// Configuration variables are now loaded from config.h
+// Copy config_sample.h to config.h and update with your actual values
 
 // Motor trigger values (invert if motor spins the wrong direction)
 const int openVent = LOW;
@@ -90,7 +44,41 @@ WiFiServer server(80);
 void spinMotor( int motor=0, int dir=LOW, int dist=1 );
 void findZero( int motor=0, int dir=LOW, int posMoved=0 );
 void ensureOpen( int closeMotor=0, int openStatus=0 );
+void checkWiFiConnection();
 //end function defaults
+
+// Check and maintain WiFi connection
+void checkWiFiConnection() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection lost. Attempting to reconnect...");
+    WiFi.disconnect();
+    delay(1000);
+
+    if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+      Serial.println("STA Failed to configure");
+    }
+
+    WiFi.begin(ssid, password);
+
+    unsigned long wifiStartTime = millis();
+    const unsigned long WIFI_TIMEOUT = 10000; // 10 second timeout
+
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiStartTime) < WIFI_TIMEOUT) {
+      delay(500);
+      Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("");
+      Serial.println("WiFi reconnected!");
+      Serial.println("IP address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("");
+      Serial.println("WiFi reconnection failed!");
+    }
+  }
+}
 
 void setup()
 {
@@ -141,19 +129,31 @@ void setup()
 }
 
 void loop(){
+  checkWiFiConnection();  // Check and maintain WiFi connection
+
   WiFiClient client = server.available();      // listen for incoming clients
 
   if (client) {
-    //Serial.println("new client");
     String currentLine = "";                   // make a String to hold incoming data from the client
     int respType = 0; // 0=html, 1=json
-    while (client.connected()) {
+    unsigned long requestStartTime = millis(); // Add timeout tracking
+    const unsigned long REQUEST_TIMEOUT = 5000; // 5 second timeout
+    bool requestProcessed = false;
+    const int MAX_LINE_LENGTH = 2048; // Prevent memory exhaustion
+
+    while (client.connected() && !requestProcessed && (millis() - requestStartTime) < REQUEST_TIMEOUT) {
       if (client.available()) {                // if there's client data
         char c = client.read();                // read a byte
         if( c == '\r' && currentLine.startsWith("GET /") ){
-          //Serial.println(currentLine);
           // Check to see if the client request was "GET /H" or "GET /L":
           
+          // Basic request validation
+          if (!currentLine.startsWith("GET /")) {
+            Serial.println("Invalid request format");
+            client.stop();
+            return;
+          }
+
           int typePos = currentLine.indexOf("&t="); // 1-digit
           if( typePos > 0 ){
             respType = currentLine.substring( typePos+3, typePos+4 ).toInt(); // type=1 means JSON response
@@ -162,6 +162,13 @@ void loop(){
           int actionPos = currentLine.indexOf("?a="); // 1-digit
           if( actionPos > 0 ){
             int action = currentLine.substring( actionPos+3, actionPos+4 ).toInt();
+
+            // Validate action is within valid range
+            if (action < 0 || action > 6) {
+              Serial.println("Invalid action parameter");
+              client.stop();
+              return;
+            }
 
             int dist = 0;
             int distPos = currentLine.indexOf("&d="); // 3-digits (eg. 050)
@@ -174,6 +181,13 @@ void loop(){
             int motorPos = currentLine.indexOf("&m="); // 1-digit
             if( motorPos > 0 ){
               motorNum = currentLine.substring( motorPos+3, motorPos+4 ).toInt();
+            }
+
+            // Validate motor number is within valid range
+            if (motorNum < 0 || motorNum >= NUM_MOTORS) {
+              Serial.println("Invalid motor number");
+              client.stop();
+              return;
             }
             
             Serial.print("Action: ");
@@ -208,24 +222,6 @@ void loop(){
                 moveMotorTo( motorNum, moveTo );
                 break;
             }
-
-            //save new state to EEPROM after any movement
-            // bool eepromUpdated = false;
-            // for (int i=0; i < NUM_MOTORS; i++){
-            //   if( -1 != stepperPos[i] ){ //ignore unknown positions
-            //     float percent = (stepperPos[i] / float(fullyOpenMicro)) * 100.0;
-            //     int intRatio = percent + 0.5; //round up to whole number
-            //     int lastVal = EEPROM.read(i);
-            //     if( lastVal != intRatio ){ //only write if it has changed (100,000 write limit on EEPROM)
-            //       EEPROM.write( i, intRatio );
-            //       eepromUpdated = true;
-            //     }
-            //   }
-            // }
-            // if( eepromUpdated ){
-            //   EEPROM.commit();
-            //   Serial.println("EEPROM state updated");
-            // }
           }
       } else if (c == '\n') {                  // check for newline character,
           if (currentLine.length() == 0) {     // if line is blank it means its the end of the client HTTP request
@@ -341,20 +337,30 @@ void loop(){
             }
             
             client.println(); // The HTTP response ends with an extra blank line:
-          
+
+            requestProcessed = true; // Mark request as processed
             break;  // break out of the while loop:
           } else {    // if you got a newline, then clear currentLine:
             currentLine = "";
           }
         } else if (c != '\r') {  // if you got anything else but a carriage return character,
-          currentLine += c;       // add it to the end of the currentLine
+          if (currentLine.length() < MAX_LINE_LENGTH) {  // Prevent memory exhaustion
+            currentLine += c;       // add it to the end of the currentLine
+          } else {
+            Serial.println("Request line too long - possible attack or malformed request");
+            client.stop();
+            return;
+          }
         }
       }
     }
-  }
 
-//  Serial.print("Button: ");
-//  Serial.println(digitalRead(endStop[0]));
+    // Handle timeout - close connection if request wasn't processed
+    if (!requestProcessed && (millis() - requestStartTime) >= REQUEST_TIMEOUT) {
+      Serial.println("Request timeout - closing connection");
+      client.stop();
+    }
+  }
 }
 
 /*
@@ -413,6 +419,12 @@ void spinMotor( int motor, int dir, int dist ){
     delayMicroseconds(stpDelay);
     digitalWrite(stepper[motor], LOW );
     delayMicroseconds(stpDelay);
+
+    // Feed watchdog every 100 steps to prevent reset during long operations
+    if (i % 100 == 0) {
+      esp_task_wdt_reset();
+    }
+
     //safety - stop immediately and reset zero if endstop is pressed
     if( i > 50 && closeVent == dir && LOW == digitalRead(endStop[motor]) ){
       Serial.println("Endstop triggered - phantom checking...");
@@ -465,6 +477,11 @@ void findZero( int motor, int dir, int posMoved ){
     digitalWrite(stepper[motor],LOW );
     delayMicroseconds(stpDelay);
     posMoved += 1; //switch likely failed if this exceeds fullyOpenMicro
+
+    // Feed watchdog every 100 steps to prevent reset during long operations
+    if (posMoved % 100 == 0) {
+      esp_task_wdt_reset();
+    }
   }
 
   //handle issues with long cables causing phanton triggers on endstop
@@ -485,41 +502,13 @@ void findZero( int motor, int dir, int posMoved ){
   zeroMotor( motor );
 }
 
-// Ensure at least one other vent (ie. total >= 70%) is open before closing
+// Ensure at least one other vent is open before closing
 void ensureOpen( int closeMotor, int openStatus ){
-  // //work out total open position
-  // for (int i=0; i < NUM_MOTORS; i++){
-  //   if( i != closeMotor ){
-  //     openStatus += stepperPos[i];
-  //   }
-  // }
-  // if( openStatus < 0 ){
-  //   openStatus = 0;
-  // }
-  // Serial.print("Total Open: ");
-  // Serial.println(openStatus);
-
-  // float ratio = openStatus / float(fullyOpenMicro);
-  // int openPercent = ratio * 100;
-  // Serial.print("Open Percent: ");
-  // Serial.println(openPercent);
-  
-  // if( openPercent < 70 ){
-  //   // Open other vents now - loop through and find first vent which isn't this one
-  //   for (int i=0; i < NUM_MOTORS; i++){
-  //     if( i != closeMotor ){
-  //       moveMotorTo( i, fullyOpenMicro );
-  //       break;
-  //     }
-  //   }
-  // }
 
   // New simple method - make sure at least one of the endstops is not depressed
   bool oneIsOpen = false;
   for (int i=0; i < NUM_MOTORS; i++){
-    // Setup initial Stepper Pos to either 0 or 100% based on whether endstop is triggered
-    stepperPos[i] = fullyOpenMicro; // Default to vent open
-    if( !checkEndstopStatus( i, 0 ) ){
+    if( !checkEndstopStatus( i, 0 ) && i != closeMotor ){
       oneIsOpen = true; // Vent is open
     }
   } //end for loop

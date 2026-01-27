@@ -1,0 +1,16 @@
+# Configuration file containing sensitive information
+config.h
+
+# Arduino IDE generated files
+*.bin
+*.elf
+*.hex
+*.map
+
+# ESP32 specific
+.vscode/
+.pio/
+
+# OS generated files
+.DS_Store
+Thumbs.db
