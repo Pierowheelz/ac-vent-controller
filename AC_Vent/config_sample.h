@@ -9,6 +9,9 @@
 // -- START USER CONFIGURATION --
 // ---------------------------------------------------------------------------------------------------------------------
 
+// Set to 1 if each motor has a redundant second switch wired to endStopAlt[]; 0 = primary endStop[] only
+#define USE_ALTERNATE_ENDSTOPS 0
+
 #define NUM_MOTORS 3
 
 const int dirPins[] = { //Pins controlling direction of stepper
@@ -30,6 +33,11 @@ const int endStop[] = { //Pins controlling stepper steps
   14,
   27,
   13
+};
+const int endStopAlt[] = { // redundant endstop pins (parallel with endStop[])
+  26,
+  34,
+  35
 };
 const char* ventNames[] = { //Display names for each vent/room
   "Room 1",

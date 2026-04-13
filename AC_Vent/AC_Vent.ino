@@ -3,6 +3,14 @@
  #ESP32 controller for AC Vents
  Peter Wells - March 2020
 
+Version 1.7.0
+ Moved motor controls to a second FreeRTOS thread (Core 0)
+ Requests return instantly, reporting target position
+
+Version 1.6.0
+ Added redundant endstop support
+ Added acceleration ramping to the motor
+
  Version 1.5.0
   Moved configuration to config.h
   Added WiFi connection management
@@ -27,6 +35,10 @@
 #include <esp_task_wdt.h>
 #include "config.h"
 
+#ifndef USE_ALTERNATE_ENDSTOPS
+#define USE_ALTERNATE_ENDSTOPS 0
+#endif
+
 // Configuration variables are now loaded from config.h
 // Copy config_sample.h to config.h and update with your actual values
 
@@ -34,18 +46,56 @@
 const int openVent = LOW;
 const int closeVent = HIGH;
 
-int stepperPos[NUM_MOTORS]; // Current position of stepper motors
+volatile int stepperPos[NUM_MOTORS];      // Current actual position (updated by motor task)
+volatile int targetPos[NUM_MOTORS];       // Target position (set by request handler)
+volatile bool closeRequested[NUM_MOTORS]; // True when close-to-endstop is requested
+volatile bool motorBusy[NUM_MOTORS];      // True while a motor is actively moving
 int fullyOpenMicro = fullyOpen * microStepping; // MicroStepping compensated fully open position (in steps)
 int stpDelay = stepDelay / microStepping; //set delay compensating for MicroStepping
 
 WiFiServer server(80);
+TaskHandle_t motorTaskHandle = NULL;
 
 //function defaults
 void spinMotor( int motor=0, int dir=LOW, int dist=1 );
-void findZero( int motor=0, int dir=LOW, int posMoved=0 );
+void findZero( int motor=0, int dir=LOW );
 void ensureOpen( int closeMotor=0, int openStatus=0 );
 void checkWiFiConnection();
+void motorTask( void* parameter );
+void serviceWatchdogAndYield( int stepCounter );
 //end function defaults
+
+/**
+ * @brief True if the closed (primary) endstop reads pressed (active LOW).
+ *        When USE_ALTERNATE_ENDSTOPS is 1, either primary or alternate counts as pressed.
+ * @param motor Motor index in endStop (and endStopAlt when alternate is enabled).
+ */
+static bool endstopAnyPressed(int motor) {
+#if USE_ALTERNATE_ENDSTOPS
+  return digitalRead(endStop[motor]) == LOW || digitalRead(endStopAlt[motor]) == LOW;
+#else
+  return digitalRead(endStop[motor]) == LOW;
+#endif
+}
+
+/**
+ * @brief True when all configured endstops read released (HIGH).
+ * @param motor Motor index in endStop (and endStopAlt when alternate is enabled).
+ */
+static bool endstopBothReleased(int motor) {
+#if USE_ALTERNATE_ENDSTOPS
+  return digitalRead(endStop[motor]) == HIGH && digitalRead(endStopAlt[motor]) == HIGH;
+#else
+  return digitalRead(endStop[motor]) == HIGH;
+#endif
+}
+
+/** Delay between endstop validation samples (milliseconds). */
+static const int ENDSTOP_SAMPLE_DELAY_MS = 2;
+/** Number of endstop validation samples taken per check. */
+static const int ENDSTOP_SAMPLE_COUNT = 10;
+/** Minimum pressed samples required to confirm a trigger. */
+static const int ENDSTOP_PRESSED_THRESHOLD = 7;
 
 // Check and maintain WiFi connection
 void checkWiFiConnection() {
@@ -92,13 +142,20 @@ void setup()
     pinMode(stepper[i], OUTPUT);      // set stepper pin mode
     pinMode(stepperPower[i], OUTPUT);      // set stepperPower pin mode
     digitalWrite(stepperPower[i], HIGH);
-    pinMode(endStop[i], INPUT);      // set endstop pin mode
+    pinMode(endStop[i], INPUT_PULLUP);      // endstops are active LOW; pull-up prevents floating inputs
+#if USE_ALTERNATE_ENDSTOPS
+    pinMode(endStopAlt[i], INPUT_PULLUP);   // redundant endstop pin mode (active LOW)
+#endif
     
     // Setup initial Stepper Pos to either 0 or 100% based on whether endstop is triggered
     stepperPos[i] = fullyOpenMicro; // Default to vent open
     if( checkEndstopStatus( i, 0 ) ){
       stepperPos[i] = 0; // Vent is closed
     }
+
+    targetPos[i] = stepperPos[i];
+    closeRequested[i] = false;
+    motorBusy[i] = false;
    
   } //end for loop
 
@@ -126,6 +183,16 @@ void setup()
   Serial.println(WiFi.macAddress());
   
   server.begin();
+
+  xTaskCreatePinnedToCore(
+    motorTask,
+    "MotorTask",
+    4096,
+    NULL,
+    1,
+    &motorTaskHandle,
+    0  // Core 0 (loop runs on Core 1)
+  );
 }
 
 void loop(){
@@ -196,30 +263,30 @@ void loop(){
             Serial.println(dist);
             switch( action ){
               case 0: //TEST - spin anti-clockwise
-                spinMotor( motorNum, openVent, distAmount );
+                targetPos[motorNum] = stepperPos[motorNum] + distAmount;
                 break;
               case 1: //TEST - spin clockwise
-                spinMotor( motorNum, closeVent, distAmount );
+                targetPos[motorNum] = stepperPos[motorNum] - distAmount;
                 break;
               case 2: //close completely (zero)
-                ensureOpen( motorNum, 0 );
-                findZero( motorNum, closeVent );
+                closeRequested[motorNum] = true;
+                targetPos[motorNum] = 0;
                 break;
-              case 3: //open completely (zero, if required, then open)
-                moveMotorTo( motorNum, fullyOpenMicro );
+              case 3: //open completely
+                targetPos[motorNum] = fullyOpenMicro;
                 break;
-              case 4: //open 50% (zero, if required, then open)
-                ensureOpen( motorNum, (fullyOpenMicro/2) );
-                moveMotorTo( motorNum, (fullyOpenMicro/2) );
+              case 4: //open 50%
+                targetPos[motorNum] = fullyOpenMicro / 2;
                 break;
-              case 5: //open 25% (zero, if required, then open)
-                ensureOpen( motorNum, (fullyOpenMicro/4) );
-                moveMotorTo( motorNum, (fullyOpenMicro/4) );
+              case 5: //open 25%
+                targetPos[motorNum] = fullyOpenMicro / 4;
                 break;
               case 6: //open to ratio set by &d= (eg. ?d=050:open50%, ?d=000:close, ?d=100:open100%)
-                int moveTo = (fullyOpenMicro / 100) * dist; // remove * 100 applied above (for cases 0 and 1 test code)
-                ensureOpen( motorNum, moveTo );
-                moveMotorTo( motorNum, moveTo );
+                targetPos[motorNum] = (fullyOpenMicro / 100) * dist;
+                if (targetPos[motorNum] == 0) {
+                  closeRequested[motorNum] = true;
+                }
+           
                 break;
             }
           }
@@ -258,14 +325,14 @@ void loop(){
                 // Gui buttons start here
                 for (int i=0; i < NUM_MOTORS; i++){
                   pos[i] = 0;
-                  if( stepperPos[i] > 0 ){
+                  if( targetPos[i] > 0 ){
                     Serial.println("Calculating position...");
-                    Serial.print("StepperPos: ");
-                    Serial.println(stepperPos[i]);
+                    Serial.print("TargetPos: ");
+                    Serial.println(targetPos[i]);
                     Serial.print("EndPos: ");
                     Serial.println(fullyOpenMicro);
                     Serial.print("Ratio: ");
-                    float ratio = stepperPos[i] / float(fullyOpenMicro);
+                    float ratio = targetPos[i] / float(fullyOpenMicro);
                     Serial.println(ratio);
                     pos[i] = ratio * 100;
                   }
@@ -307,24 +374,26 @@ void loop(){
                 client.print("{");
                 for (int i=0; i < NUM_MOTORS; i++){
                   pos[i] = 0;
-                  if( stepperPos[i] > 0 ){
+                  if( targetPos[i] > 0 ){
                     Serial.println("Calculating position...");
-                    Serial.print("StepperPos: ");
-                    Serial.println(stepperPos[i]);
+                    Serial.print("TargetPos: ");
+                    Serial.println(targetPos[i]);
                     Serial.print("EndPos: ");
                     Serial.println(fullyOpenMicro);
                     Serial.print("Ratio: ");
-                    float ratio = stepperPos[i] / float(fullyOpenMicro);
+                    float ratio = targetPos[i] / float(fullyOpenMicro);
                     Serial.println(ratio);
                     pos[i] = ratio * 100;
                   }
-                  // Print: "0":{"name":"Vent #1","pos":50},
+                  // Print: "0":{"name":"Vent #1","pos":50,"busy":false},
                   client.print( "\"" );
                   client.print( i );
                   client.print( "\":{\"name\":\"" );
                   client.print( ventNames[i] );
                   client.print( "\",\"pos\":" );
                   client.print( pos[i] );
+                  client.print( ",\"busy\":" );
+                  client.print( motorBusy[i] ? "true" : "false" );
                   client.print( "}" );
                   if( i+1 < NUM_MOTORS ){ //add trailing comma to all but the last motor
                       client.print( "," );
@@ -363,6 +432,44 @@ void loop(){
   }
 }
 
+/**
+ * @brief FreeRTOS task that drives motors toward their target positions.
+ *
+ * Runs on Core 0 in a continuous loop. For each motor it checks whether a
+ * close-to-endstop was requested (closeRequested) or whether targetPos
+ * differs from stepperPos, and performs the appropriate move. If an endstop
+ * interrupts a positional move and no new target has been set, targetPos is
+ * synced to the actual position to avoid retry loops.
+ *
+ * @param parameter Unused FreeRTOS task parameter.
+ */
+void motorTask( void* parameter ){
+  esp_task_wdt_add(NULL);
+  for(;;){
+    esp_task_wdt_reset();
+    for( int i = 0; i < NUM_MOTORS; i++ ){
+      if( closeRequested[i] ){
+        motorBusy[i] = true;
+        closeRequested[i] = false;
+        ensureOpen( i, 0 );
+        findZero( i, closeVent );
+        motorBusy[i] = false;
+      } else if( targetPos[i] != stepperPos[i] ){
+        motorBusy[i] = true;
+        int target = targetPos[i];
+        ensureOpen( i, target );
+        moveMotorTo( i, target );
+        // Sync target if endstop interrupted the move and no new target was set
+        if( stepperPos[i] != target && targetPos[i] == target ){
+          targetPos[i] = stepperPos[i];
+        }
+        motorBusy[i] = false;
+      }
+    }
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
+
 /*
  * Move a motor to an absolute position (in microSteps)
  */
@@ -371,7 +478,7 @@ void moveMotorTo( int motor, int pos ){
   
   Serial.print("Start Position: ");
   Serial.println(stepperPos[motor]);
-  if( motorPos <= 0 ){ //motor position unknown
+  if( motorPos < 0 ){ //motor position unknown
     Serial.println("Zeroing");
     findZero( motor, closeVent );
     motorPos = 0;
@@ -395,10 +502,32 @@ void moveMotorTo( int motor, int pos ){
   Serial.println(stepperPos[motor]);
 }
 
-/*
- * Spin a motor a relative amount (in microSteps)
+/**
+ * @brief Feed this task watchdog and briefly yield so IDLE tasks can run.
+ *
+ * @param stepCounter Current loop step index.
+ */
+void serviceWatchdogAndYield( int stepCounter ){
+  if( stepCounter % 100 == 0 ){
+    esp_task_wdt_reset();
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+  }
+}
+
+/**
+ * @brief Spin a motor a relative amount (in microSteps) with linear acceleration/deceleration.
+ *
+ * The ramp zone length is max(25% of dist, 5% of fullyOpenMicro), capped at
+ * half the total distance so accel and decel zones never overlap. Step delay
+ * linearly interpolates from ACCEL_START_MULTIPLIER * stpDelay down to stpDelay.
+ *
+ * @param motor Motor index.
+ * @param dir   Direction pin value (openVent / closeVent).
+ * @param dist  Number of microsteps to move.
  */
 void spinMotor( int motor, int dir, int dist ){
+  static const int ACCEL_START_MULTIPLIER = 3;
+
   digitalWrite(stepperPower[motor], LOW);
   digitalWrite(dirPins[motor], dir);
   if( 0 == dist ){
@@ -409,29 +538,43 @@ void spinMotor( int motor, int dir, int dist ){
   if( closeVent == dir ){
     addAmount = -1;
   }
-  
+
+  int rampSteps = fullyOpenMicro / 20;
+  if( rampSteps > dist / 2 ){
+    rampSteps = dist / 2;
+  }
+  int maxDelay = stpDelay * ACCEL_START_MULTIPLIER;
+
   Serial.print("step delay: ");
   Serial.println(stpDelay);
+  Serial.print("ramp steps: ");
+  Serial.println(rampSteps);
 
   for (int i=0; i < dist; i++){
-    digitalWrite(stepper[motor], HIGH);
-    stepperPos[motor] += addAmount;
-    delayMicroseconds(stpDelay);
-    digitalWrite(stepper[motor], LOW );
-    delayMicroseconds(stpDelay);
-
-    // Feed watchdog every 100 steps to prevent reset during long operations
-    if (i % 100 == 0) {
-      esp_task_wdt_reset();
+    int currentDelay = stpDelay;
+    if( rampSteps > 0 ){
+      int rampPos = min(i, dist - 1 - i);
+      if( rampPos < rampSteps ){
+        currentDelay = maxDelay - (long)(maxDelay - stpDelay) * rampPos / rampSteps;
+      }
     }
 
-    //safety - stop immediately and reset zero if endstop is pressed
-    if( i > 50 && closeVent == dir && LOW == digitalRead(endStop[motor]) ){
+    digitalWrite(stepper[motor], HIGH);
+    stepperPos[motor] += addAmount;
+    delayMicroseconds(currentDelay);
+    digitalWrite(stepper[motor], LOW );
+    delayMicroseconds(currentDelay);
+
+    // Keep watchdog healthy and allow IDLE0 to run during long moves.
+    serviceWatchdogAndYield(i);
+
+    //safety - stop immediately and reset zero if either endstop is pressed
+    if( i > 50 && closeVent == dir && endstopAnyPressed(motor) ){
       Serial.println("Endstop triggered - phantom checking...");
       if( checkEndstopStatus( motor, 0 ) ){ //might be phantom trigger (long cables)
         Serial.println("Unexpectedly hit endstop.");
         zeroMotor( motor );
-         //the break seems to end the entire function sometimes, so len't make sure the motor is off
+         //the break seems to end the entire function sometimes, so let's make sure the motor is off
         digitalWrite(stepperPower[motor], HIGH);
         break;
       }
@@ -443,17 +586,28 @@ void spinMotor( int motor, int dir, int dist ){
   Serial.println(stepperPos[motor]);
 }
 
-// Check that endstop is pressed (includes 10x 100ms phantom press checks)
+/**
+ * @brief Confirm an endstop trigger by sampling over time to reject noise.
+ *
+ * Keeps compatibility with existing call-sites by accepting an unused counter.
+ * A trigger is confirmed only when enough samples read pressed.
+ *
+ * @param motor Motor index.
+ * @param counter Unused legacy parameter retained for compatibility.
+ * @return true if the trigger is confirmed, false otherwise.
+ */
 bool checkEndstopStatus( int motor, int counter ){
-    bool is_triggered = true;
-    delayMicroseconds(100);
-    if( HIGH == digitalRead(endStop[motor]) ){
-        return false;
-    } else if( counter < 10 ){
-        is_triggered = checkEndstopStatus( motor, (counter+1) );
+    (void)counter;
+    int pressedSamples = 0;
+
+    for( int i = 0; i < ENDSTOP_SAMPLE_COUNT; i++ ){
+      if( endstopAnyPressed(motor) ){
+        pressedSamples += 1;
+      }
+      delay(ENDSTOP_SAMPLE_DELAY_MS);
     }
-    
-    return is_triggered;
+
+    return pressedSamples >= ENDSTOP_PRESSED_THRESHOLD;
 }
 
 // Set motor position tracker to 0 (called when endstop is triggered)
@@ -461,38 +615,108 @@ void zeroMotor( int motor ){
   stepperPos[motor] = 0;
 }
 
-// Close a vent
-void findZero( int motor, int dir, int posMoved ){
+/**
+ * @brief Close a vent by driving toward the endstop with start acceleration
+ *        and position-based deceleration toward 25% speed before the expected
+ *        zero (from stepperPos at entry).
+ *
+ * First steps ramp delay from ACCEL_START_MULTIPLIER * stpDelay down to
+ * stpDelay (same zone length as spinMotor). In the last approach zone before
+ * the tracked position would reach zero, delay ramps from stpDelay up to
+ * 4 * stpDelay (25% step rate). If the endstop is still not reached after the
+ * expected zero, stepping continues at that crawl speed until the endstop or
+ * step limit.
+ *
+ * Iteratively handles phantom endstop triggers caused by electrical noise on
+ * long cables. If the step limit (fullyOpenMicro + 50) is reached without a
+ * confirmed endstop, the motor is assumed to be at zero (endstop likely failed).
+ *
+ * @param motor Motor index.
+ * @param dir   Direction pin value (typically closeVent).
+ */
+void findZero( int motor, int dir ){
+  static const int ACCEL_START_MULTIPLIER = 3;
+  /** Step delay multiplier at end of approach (25% speed = 4x period). */
+  static const int FINDZERO_CRAWL_DELAY_MULT = 4;
+
   Serial.print("FindZero called for motor: ");
   Serial.println(motor);
   digitalWrite(stepperPower[motor], LOW);
-  
+
   Serial.print("step delay: ");
   Serial.println(stpDelay);
 
+  const int estStepsToZero = stepperPos[motor];
+  int rampAccelSteps = fullyOpenMicro / 20;
+  int decelRampSteps = min( rampAccelSteps, max( 1, abs( estStepsToZero ) ) );
+  int maxDelay = stpDelay * ACCEL_START_MULTIPLIER;
+  const int crawlDelay = stpDelay * FINDZERO_CRAWL_DELAY_MULT;
+  int posMoved = 0;
+  int stepLimit = fullyOpenMicro + 50;
+
+  Serial.print("ramp accel steps: ");
+  Serial.println(rampAccelSteps);
+  Serial.print("ramp decel steps: ");
+  Serial.println(decelRampSteps);
+
   digitalWrite(dirPins[motor], dir);
-  while( HIGH == digitalRead(endStop[motor]) && posMoved < (fullyOpenMicro + 200) ){
-    digitalWrite(stepper[motor], HIGH);
-    delayMicroseconds(stpDelay);
-    digitalWrite(stepper[motor],LOW );
-    delayMicroseconds(stpDelay);
-    posMoved += 1; //switch likely failed if this exceeds fullyOpenMicro
 
-    // Feed watchdog every 100 steps to prevent reset during long operations
-    if (posMoved % 100 == 0) {
-      esp_task_wdt_reset();
+  while( posMoved < stepLimit ){
+    // Step while endstop is released and within step limit
+    while( endstopBothReleased(motor) && posMoved < stepLimit ){
+      int currentDelay = stpDelay;
+      if( posMoved < rampAccelSteps ){
+        currentDelay = maxDelay - (long)(maxDelay - stpDelay) * posMoved / rampAccelSteps;
+      }
+
+      const int remaining = estStepsToZero - posMoved;
+      if( remaining < decelRampSteps ){
+        int decelDelay;
+        if( remaining <= 0 ){
+          decelDelay = crawlDelay;
+        } else {
+          decelDelay = stpDelay + (long)(crawlDelay - stpDelay) * (decelRampSteps - remaining) / decelRampSteps;
+        }
+        if( decelDelay > currentDelay ){
+          currentDelay = decelDelay;
+        }
+      }
+
+      digitalWrite(stepper[motor], HIGH);
+      delayMicroseconds(currentDelay);
+      digitalWrite(stepper[motor], LOW);
+      delayMicroseconds(currentDelay);
+      posMoved += 1;
+
+      // Keep watchdog healthy and allow IDLE0 to run during long zeroing.
+      serviceWatchdogAndYield(posMoved);
     }
+
+    if( posMoved >= stepLimit ){
+      Serial.println("WARNING: Endstop never triggered - assuming zero position");
+      break;
+    }
+
+    // Endstop triggered - verify it's not a phantom from cable noise
+    Serial.println("Endstop triggered - phantom checking...");
+    if( checkEndstopStatus( motor, 0 ) ){
+      Serial.println("Endstop confirmed");
+      break;
+    }
+
+    Serial.println("Phantom trigger detected - continuing...");
   }
 
-  //handle issues with long cables causing phanton triggers on endstop
-  Serial.println("Endstop triggered - phantom checking...");
-  if( !checkEndstopStatus( motor, 0 ) && posMoved < (fullyOpenMicro + 200) ){ //might be phantom trigger (long cables)
-    Serial.println("Phantom trigger detected - loop again");
-    findZero( motor, dir, posMoved );
-  }
   Serial.println("FindZero finished");
-  Serial.print("Endstop Status: ");
+#if USE_ALTERNATE_ENDSTOPS
+  Serial.print("Endstop Status (primary/alt): ");
+  Serial.print(digitalRead(endStop[motor]));
+  Serial.print(" / ");
+  Serial.println(digitalRead(endStopAlt[motor]));
+#else
+  Serial.print("Endstop Status (primary): ");
   Serial.println(digitalRead(endStop[motor]));
+#endif
   Serial.print("PosMoved: ");
   Serial.print(posMoved);
   Serial.print(" / ");
@@ -504,22 +728,22 @@ void findZero( int motor, int dir, int posMoved ){
 
 // Ensure at least one other vent is open before closing
 void ensureOpen( int closeMotor, int openStatus ){
+  // DISABLED - we have a permanent open vent
+  // // New simple method - make sure at least one of the endstops is not depressed
+  // bool oneIsOpen = false;
+  // for (int i=0; i < NUM_MOTORS; i++){
+  //   if( !checkEndstopStatus( i, 0 ) && i != closeMotor ){
+  //     oneIsOpen = true; // Vent is open
+  //   }
+  // } //end for loop
 
-  // New simple method - make sure at least one of the endstops is not depressed
-  bool oneIsOpen = false;
-  for (int i=0; i < NUM_MOTORS; i++){
-    if( !checkEndstopStatus( i, 0 ) && i != closeMotor ){
-      oneIsOpen = true; // Vent is open
-    }
-  } //end for loop
-
-  if( !oneIsOpen ){
-    // Open other vents now - loop through and find last vent which isn't this one
-    for (int i=(NUM_MOTORS-1); i >= 0; i--){
-      if( i != closeMotor ){
-        moveMotorTo( i, fullyOpenMicro );
-        break;
-      }
-    }
-  }
+  // if( !oneIsOpen ){
+  //   // Open other vents now - loop through and find last vent which isn't this one
+  //   for (int i=(NUM_MOTORS-1); i >= 0; i--){
+  //     if( i != closeMotor ){
+  //       moveMotorTo( i, fullyOpenMicro );
+  //       break;
+  //     }
+  //   }
+  // }
 }
