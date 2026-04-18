@@ -2,6 +2,18 @@
  * ESP32 controller for AC Vents (TMC2209 + StallGuard4 edition)
  * Peter Wells - March 2020 .. April 2026
  *
+ * Version 2.0.3
+ *  motorRequiresHoming renamed to motorHomed (inverse): two flags remain — motorPositionKnown
+ *  (HTTP just set/confirmed target) vs motorHomed (mechanical zero known this boot); both needed.
+ *
+ * Version 2.0.2
+ *  "Stay at 100%" first command: motorPositionKnown + not-yet-homed triggers findZero then
+ *  move to target even when target already matched assumed position (avoids boot-time motion).
+ *
+ * Version 2.0.1
+ *  Lazy homing: each motor assumes fully open until the first move or explicit close; then
+ *  StallGuard findZero establishes zero.
+ *
  * Version 2.0.0
  *  Switched to the TMC2209 stepper hat:
  *    - Driver configuration (microstepping, current, direction, StallGuard) is sent via the
@@ -75,6 +87,18 @@ volatile int  targetPos[NUM_MOTORS];
 volatile bool closeRequested[NUM_MOTORS];
 /** True while a motor is actively moving. */
 volatile bool motorBusy[NUM_MOTORS];
+/**
+ * False until StallGuard findZero() has succeeded for this motor since boot (mechanical zero known).
+ * Distinct from motorPositionKnown: after homing, many HTTP actions set position fresh true while
+ * motorHomed stays true so we do not re-stall on every identical command.
+ */
+volatile bool motorHomed[NUM_MOTORS];
+/**
+ * True after an HTTP request sets or confirms this motor's target position (including "stay at 100%").
+ * motorTask clears it after acting. While !motorHomed, together with this flag it forces a reconcile
+ * homing pass even when target already matched the assumed position; stays false at boot so idle does not home.
+ */
+volatile bool motorPositionKnown[NUM_MOTORS];
 
 /** Shared half-duplex UART used to talk to every TMC2209 driver.
  *  Aliases the pre-defined ESP32 HardwareSerial instance selected via TMC_UART_NUM in config.h. */
@@ -187,9 +211,9 @@ void pulseStep(int motor, int delayMicros) {
 /**
  * @brief Push the full per-driver configuration over UART.
  *
- * Configures StealthChop (required for StallGuard4), the StallGuard threshold, run/hold currents,
- * microstepping and the initial shaft polarity. Logs the connection test result for each driver
- * so wiring problems are visible in the serial monitor.
+ * Configures StealthChop (required for StallGuard4), per-motor StallGuard threshold and run/hold
+ * currents, microstepping and the initial shaft polarity. Logs the connection test result for each
+ * driver so wiring problems are visible in the serial monitor.
  *
  * @param motor Motor index.
  */
@@ -206,7 +230,7 @@ void configureDriver(int motor) {
 
   // Currents
   const float holdMultiplier = constrain(tmcHoldCurrentPct, 0, 100) / 100.0f;
-  d->rms_current(tmcRunCurrentMA, holdMultiplier);
+  d->rms_current(tmcRunCurrentMA[motor], holdMultiplier);
   d->iholddelay(8);
   d->TPOWERDOWN(20);
 
@@ -217,7 +241,7 @@ void configureDriver(int motor) {
 
   // StallGuard4: keep StallGuard active across the velocity range we ever step at, then publish the threshold.
   d->TCOOLTHRS(0xFFFFF);
-  d->SGTHRS(stallGuardThreshold);
+  d->SGTHRS(stallGuardThreshold[motor]);
 
   // Initial shaft polarity. Direction is overridden per move via setMotorDirection().
   d->shaft(closeShaftDirection[motor]);
@@ -255,12 +279,14 @@ void setup() {
     drivers[i] = new TMC2209Stepper(&tmcSerial, tmcSenseResistor, tmcAddresses[i]);
     configureDriver(i);
 
-    // Position is unknown without endstops. Assume fully open and queue a startup home so the
-    // motor finds its zero via StallGuard before serving any user requests.
-    stepperPos[i]     = fullyOpenMicro;
-    targetPos[i]      = 0;
-    closeRequested[i] = true;
-    motorBusy[i]      = false;
+    // Mechanical position is unknown after boot; assume 100% open for both tracked and target
+    // position until the first HTTP command (motorPositionKnown) runs findZero while !motorHomed.
+    stepperPos[i]          = fullyOpenMicro;
+    targetPos[i]           = fullyOpenMicro;
+    closeRequested[i]      = false;
+    motorBusy[i]           = false;
+    motorHomed[i]          = false;
+    motorPositionKnown[i] = false;
   }
 
   // Wi-Fi
@@ -391,6 +417,8 @@ void loop() {
             }
             break;
         }
+        // So motorTask can re-home when the first command matches assumed position (e.g. 100% open).
+        motorPositionKnown[motorNum] = true;
       }
     } else if (c == '\n') {
       if (currentLine.length() == 0) {
@@ -536,8 +564,12 @@ void loop() {
  *
  * Runs on Core 0 in a continuous loop. For each motor it checks whether a sensorless close
  * was requested (closeRequested) or whether targetPos differs from stepperPos, and performs
- * the appropriate move. If a StallGuard event interrupts a positional move and no new target
- * has been set, targetPos is synced to the actual position to avoid retry loops.
+ * the appropriate move. If the motor is not yet homed (!motorHomed) and motorPositionKnown is set
+ * (HTTP just touched that motor), findZero runs even when target already equals assumed position (e.g.
+ * first command "100% open"), then moveMotorTo syncs to target. closeRequested always runs
+ * findZero and sets motorHomed. motorPositionKnown avoids homing at idle boot. If a StallGuard
+ * event interrupts a positional move and no new target has been set, targetPos is synced to
+ * the actual position to avoid retry loops.
  *
  * @param parameter Unused FreeRTOS task parameter.
  */
@@ -551,15 +583,23 @@ void motorTask(void* parameter) {
         closeRequested[i] = false;
         ensureOpen(i, 0);
         findZero(i);
+        motorHomed[i]         = true;
+        motorPositionKnown[i] = false;
         motorBusy[i] = false;
-      } else if (targetPos[i] != stepperPos[i]) {
+      } else if (targetPos[i] != stepperPos[i] || (!motorHomed[i] && motorPositionKnown[i])) {
         motorBusy[i] = true;
+        if (!motorHomed[i]) {
+          ensureOpen(i, targetPos[i]);
+          findZero(i);
+          motorHomed[i] = true;
+        }
         int target = targetPos[i];
         ensureOpen(i, target);
         moveMotorTo(i, target);
         if (stepperPos[i] != target && targetPos[i] == target) {
           targetPos[i] = stepperPos[i];
         }
+        motorPositionKnown[i] = false;
         motorBusy[i] = false;
       }
     }
@@ -574,8 +614,7 @@ void motorTask(void* parameter) {
 /**
  * @brief Move a motor to an absolute position (in microsteps).
  *
- * If the current position is unknown (negative), runs findZero() first to establish the zero
- * reference using StallGuard.
+ * Homing before the first move is handled in motorTask via !motorHomed && motorPositionKnown.
  *
  * @param motor Motor index.
  * @param pos   Target position in microsteps (0 .. fullyOpenMicro).
@@ -585,11 +624,6 @@ void moveMotorTo(int motor, int pos) {
 
   Serial.print("Start Position: ");
   Serial.println(stepperPos[motor]);
-  if (motorPos < 0) {
-    Serial.println("Zeroing");
-    findZero(motor);
-    motorPos = 0;
-  }
 
   int dist = pos - motorPos;
   bool closing = false;
@@ -693,9 +727,11 @@ void zeroMotor(int motor) {
  * then decelerates back to a crawl as it approaches the expected zero (estimated from the current
  * tracked position). Slowing down protects the mechanism and improves StallGuard repeatability.
  *
- * After `stallGuardWarmupSteps` micro-steps, the SG_RESULT register is polled every
- * `stallGuardCheckInterval` steps. A stall is registered when SG_RESULT < 2 * stallGuardThreshold,
- * matching the same behaviour the DIAG output would produce. If the step limit
+ * After an effective warmup of `min(stallGuardWarmupSteps, max(0, estStepsToZero))` micro-steps
+ * (so already-near-zero homing does not ignore StallGuard for the full config warmup),
+ * the SG_RESULT register is polled every `stallGuardCheckInterval` steps. A stall is registered when
+ * SG_RESULT < 2 * stallGuardThreshold[motor], matching the same behaviour the DIAG output would
+ * produce. If the step limit
  * (fullyOpenMicro + 50) is reached without a stall, zero is assumed (stall threshold likely
  * needs tuning) and a warning is logged.
  *
@@ -712,17 +748,16 @@ void findZero(int motor) {
   Serial.println(stpDelay);
 
   const int estStepsToZero = stepperPos[motor];
-  int       rampAccelSteps = fullyOpenMicro / 20;
-  int       decelRampSteps = min(rampAccelSteps, max(1, abs(estStepsToZero)));
+  const int effectiveStallWarmupSteps =
+      min(stallGuardWarmupSteps, max(0, estStepsToZero));
+  int       rampAccelSteps = min(fullyOpenMicro / 20, max(1, abs(estStepsToZero)));
   const int maxDelay       = stpDelay * ACCEL_START_MULTIPLIER;
   const int crawlDelay     = stpDelay * FINDZERO_CRAWL_DELAY_MULT;
   const int stepLimit      = fullyOpenMicro + 50;
-  const uint16_t stallTrigger = (uint16_t)stallGuardThreshold * 2;
+  const uint16_t stallTrigger = (uint16_t)stallGuardThreshold[motor] * 2;
 
   Serial.print("ramp accel steps: ");
   Serial.println(rampAccelSteps);
-  Serial.print("ramp decel steps: ");
-  Serial.println(decelRampSteps);
 
   int  posMoved = 0;
   bool stalled  = false;
@@ -730,23 +765,28 @@ void findZero(int motor) {
   while (posMoved < stepLimit && !stalled) {
     int currentDelay = stpDelay;
 
-    // Acceleration ramp at the start of the move.
-    if (posMoved < rampAccelSteps) {
-      currentDelay = maxDelay - (long)(maxDelay - stpDelay) * posMoved / rampAccelSteps;
-    }
-
-    // Deceleration ramp as we approach the expected zero - if we overshoot, keep crawling at
-    // the slow approach speed until StallGuard fires or the step limit is hit.
-    const int remaining = estStepsToZero - posMoved;
-    if (remaining < decelRampSteps) {
-      int decelDelay;
-      if (remaining <= 0) {
-        decelDelay = crawlDelay;
-      } else {
-        decelDelay = stpDelay + (long)(crawlDelay - stpDelay) * (decelRampSteps - remaining) / decelRampSteps;
+    if( estStepsToZero <= 10 ) {
+      // Crawl at the slow speed for really short moves.
+      currentDelay = crawlDelay;
+    } else {
+      // Acceleration ramp at the start of the move.
+      if (posMoved < rampAccelSteps) {
+        currentDelay = maxDelay - (long)(maxDelay - stpDelay) * posMoved / rampAccelSteps;
       }
-      if (decelDelay > currentDelay) {
-        currentDelay = decelDelay;
+
+      // Deceleration ramp as we approach the expected zero - if we overshoot, keep crawling at
+      // the slow approach speed until StallGuard fires or the step limit is hit.
+      const int remaining = estStepsToZero - posMoved;
+      if (remaining < rampAccelSteps) {
+        int decelDelay;
+        if (remaining <= 0) {
+          decelDelay = crawlDelay;
+        } else {
+          decelDelay = stpDelay + (long)(crawlDelay - stpDelay) * (rampAccelSteps - remaining) / rampAccelSteps;
+        }
+        if (decelDelay > currentDelay) {
+          currentDelay = decelDelay;
+        }
       }
     }
 
@@ -755,8 +795,9 @@ void findZero(int motor) {
 
     serviceWatchdogAndYield(posMoved);
 
-    // Poll StallGuard once we're past the startup transient.
-    if (posMoved > stallGuardWarmupSteps && (posMoved % stallGuardCheckInterval) == 0) {
+    // Poll StallGuard once we're past the startup transient (or immediately for really short moves).
+    if (posMoved > effectiveStallWarmupSteps &&
+        (posMoved % stallGuardCheckInterval) == 0) {
       const uint16_t sg = drivers[motor]->SG_RESULT();
       if (sg < stallTrigger) {
         Serial.print("StallGuard triggered at step ");

@@ -52,9 +52,10 @@ const int  tmcUartTxPin = 1;  // ESP32 GPIO connected to the TMC2209 PDN_UART li
 const long tmcUartBaud  = 115200;
 
 // ---- TMC2209 driver tuning ----------------------------------------------------------------------------------------
-const float    tmcSenseResistor    = 0.11f; // Onboard sense resistor (BTT/Watterott TMC2209 V1.x = 0.11 Ω)
-const uint16_t tmcRunCurrentMA     = 800;   // Motor RMS current while moving (mA) - tune to your motor / supply
-const uint8_t  tmcHoldCurrentPct   = 50;    // Idle current as percentage of run current (0..100)
+const float tmcSenseResistor = 0.11f; // Onboard sense resistor (BTT/Watterott TMC2209 V1.x = 0.11 Ω)
+// Per-motor RMS run current (mA), same index order as stepPins[] / tmcAddresses[].
+const uint16_t tmcRunCurrentMA[NUM_MOTORS] = { 800, 800, 800 };
+const uint8_t  tmcHoldCurrentPct           = 50; // Idle current as percentage of run current (0..100), all motors
 
 // Microstepping (1, 2, 4, 8, 16, 32, 64, 128, 256). Sent over UART at startup.
 const int microStepping = 8;
@@ -66,9 +67,9 @@ const int fullyOpen = 1000;
 const int stepDelay = 2000;
 
 // ---- StallGuard4 (sensorless homing) ------------------------------------------------------------------------------
-// Threshold for SGTHRS register (0..255). A stall is detected when SG_RESULT < 2 * stallGuardThreshold.
+// Per-motor SGTHRS (0..255). A stall is detected when SG_RESULT < 2 * stallGuardThreshold[motor].
 // HIGHER value = MORE sensitive (triggers earlier with less force). Tune to your motor / load.
-const uint8_t stallGuardThreshold     = 100;
+const uint8_t stallGuardThreshold[NUM_MOTORS] = { 100, 100, 100 };
 // Skip stall checks for the first N micro-steps after starting findZero, to avoid acceleration false-positives.
 const int     stallGuardWarmupSteps   = 200;
 // Read SG_RESULT every N micro-steps. Lower = faster reaction, but more UART traffic and slower stepping.
