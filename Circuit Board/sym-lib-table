@@ -1,0 +1,5 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "ESP-32_Stepper_Hat_v6-eagle-import") (type "KiCad") (uri "${KIPRJMOD}/ESP-32_Stepper_Hat_v6-eagle-import.kicad_sym") (options "") (descr ""))
+	(lib (name "ESP-32_Stepper_Hat_v6_1-eagle-import") (type "KiCad") (uri "${KIPRJMOD}/ESP-32_Stepper_Hat_v6_1-eagle-import.kicad_sym") (options "") (descr ""))
+)

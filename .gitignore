@@ -1,0 +1,7 @@
+# Ignore local history folders
+.history/
+**/.history/
+
+# Ignore KiCad specific lock and backup files
+*.lck
+*-backups/
