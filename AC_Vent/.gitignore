@@ -1,6 +1,9 @@
 # Configuration file containing sensitive information
 config.h
 
+# Alternate config files (eg. config.h.old)
+config.h.*
+
 # Arduino IDE generated files
 *.bin
 *.elf

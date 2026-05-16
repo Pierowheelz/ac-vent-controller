@@ -9,9 +9,6 @@
 // -- START USER CONFIGURATION --
 // ---------------------------------------------------------------------------------------------------------------------
 
-// Set to 1 if each motor has a redundant second switch wired to endStopAlt[]; 0 = primary endStop[] only
-#define USE_ALTERNATE_ENDSTOPS 0
-
 #define NUM_MOTORS 3
 
 const int dirPins[] = { //Pins controlling direction of stepper
@@ -29,15 +26,10 @@ const int stepperPower[] = { //Pins controlling stepper power
   19,
   32
 };
-const int endStop[] = { //Pins controlling stepper steps
+const int endStop[] = { // endstop switch pins (active LOW)
   14,
   27,
   13
-};
-const int endStopAlt[] = { // redundant endstop pins (parallel with endStop[])
-  26,
-  34,
-  35
 };
 const char* ventNames[] = { //Display names for each vent/room
   "Room 1",
@@ -45,11 +37,21 @@ const char* ventNames[] = { //Display names for each vent/room
   "Room 3"
 };
 
-// Current microstepping setting (no need to vary stepDelay or fullyOpen)
+// Current microstepping setting (no need to vary stepDelay); fullyOpen[] is per motor
 const int microStepping = 8; //1=no microStepping, 32=max (on DRV8825)
 
-// Amount in steps (200 per rotation) to open the vent (ignoring microStepping)
-const int fullyOpen = 1000;
+// Full-open travel in full steps (200 per rotation), one entry per motor — multiplied by microStepping at runtime
+const int fullyOpen[] = {
+  1000,
+  1000,
+  1000
+};
+static_assert(sizeof(fullyOpen) / sizeof(fullyOpen[0]) == NUM_MOTORS,
+              "fullyOpen[] must have NUM_MOTORS entries");
+
+// Endstop phantom rejection: require this many separate approaches (press events) before
+// running the blocking checkEndstopStatus() debounce (findZero homing and spinMotor close).
+const int ENDSTOP_PHANTOM_CONFIRM_TRIGGERS = 2;
 
 //Speed of the motor (in Microseconds)
 const int stepDelay = 2000; //delay between steps (1000 = fastest, 5000 = pretty slow)
