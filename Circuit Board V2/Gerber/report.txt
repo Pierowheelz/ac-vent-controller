@@ -1,0 +1,10 @@
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-F_Cu.gtl'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-B_Cu.gbl'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-F_Paste.gtp'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-B_Paste.gbp'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-F_Silkscreen.gto'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-B_Silkscreen.gbo'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-F_Mask.gts'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-B_Mask.gbs'.
+Plotted to '/home/peter/Apps/ac-vent-controller/Circuit Board V2/Gerber/Circuit Board V2-Edge_Cuts.gm1'.
+Info: Done.

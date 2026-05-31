@@ -27,7 +27,7 @@ This project uses a separate configuration file to keep sensitive information ou
 
 ## Configuration Variables
 
-- `NUM_MOTORS`: Number of vent motors (default: 3)
+- `NUM_MOTORS`: Number of vent motors (default: 4)
 - `dirPins[]`: Direction control pins for each motor
 - `stepper[]`: Step control pins for each motor
 - `stepperPower[]`: Power control pins for each motor

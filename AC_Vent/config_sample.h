@@ -14,31 +14,36 @@
 const int dirPins[] = { //Pins controlling direction of stepper
   15, //Room 1
   5,  //Room 2
-  25  //Room 3
+  25, //Room 3
+  12  //Room 4
 };
 const int stepper[] = { //Pins controlling stepper steps
   2,
   18,
-  33
+  33,
+  13
 };
 const int stepperPower[] = { //Pins controlling stepper power
   4,
   19,
-  32
+  32,
+  26
 };
 const int endStop[] = { // endstop switch pins (active LOW)
   14,
   27,
-  13
+  34,
+  35
 };
 const char* ventNames[] = { //Display names for each vent/room
   "Room 1",
   "Room 2",
-  "Room 3"
+  "Room 3",
+  "Room 4"
 };
 
 // Current microstepping setting (no need to vary stepDelay); fullyOpen[] is per motor
-const int microStepping = 8; //1=no microStepping, 32=max (on DRV8825)
+const int microStepping = 16; //1=no microStepping, 32=max (on DRV8825)
 
 // Full-open travel in full steps (200 per rotation), one entry per motor — multiplied by microStepping at runtime
 const int fullyOpen[] = {
