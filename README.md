@@ -1,15 +1,21 @@
 # Ducted Air Conditioner Vent Controller
-This project uses an ESP32-based controller, along with stepper motors and endstop switches (from a 3d printer kit) to control the circular Air Conditioner vents used in many ducted systems.
+This project uses an ESP32-based controller, stepper motors, TMC2209 (or similar) drivers and endstop switches (from a 3d printer kit) to control the circular Air Conditioner vents used in many ducted HVAC systems.
+Each board can control up to 4 vents (leave the stepper header empty and tweak the /AC_Vent/config.h to control fewer vents). Multiple boards can be utilised to control more vents, or for vents too far from one board.
+
+# Home Automation
+This project is part of a larger ecosystem, designed to enable automation of vents based on the room temperatures, along with an App for manual control.
+* [home-app-backend](https://github.com/Pierowheelz/home-app-backend) - backend API and automation logic
+* [home-control](https://github.com/Pierowheelz/home-control) - web app for manual control
 
 ## Parts Required
 * ESP32 Dev Board (NodeMCU-ESP32 DEVKITV1 - 30 pins - based on ESP-WROOM-32)
 * 3D Printer Kit (from ebay or Aliexpress)
-    * 3x Nema 17 stepper motors + cables
-    * 3x Nema 17 mounting brackets
-    * 3x Stepper motors drivers - A4988 or DRV8825 or TMC2208 (for quieter operation)
-    * 3x RAMPS 1.4 switch endstops + cables (Note, swap the trigger switch for a waterproof one for more reliable operation, but keep the switch PCB)
+    * 4x Nema 17 stepper motors + cables
+    * 4x Nema 17 mounting brackets
+    * 4x Stepper motors drivers - A4988 or DRV8825 or TMC2208 (for quieter operation)
+    * 4x RAMPS 1.4 switch endstops + cables (Note, swap the trigger switch for a waterproof one for more reliable operation, but keep the switch PCB)
 * Order the PCB from the Gerber files (or custom-build with Perfboard 24 x 18 pins)
-* 3x 150mm Lead screws + copper nuts (4mm pitch ideal, but any will work)
+* 4x 150mm Lead screws + copper nuts (4mm pitch ideal, but any will work)
 * DC-DC Buck convertor TRS2433 (or you can use an LM2596 set to 3.3v if DIYing the board)
 * DC power supply (8-35 V)
 * (optional) header-pin sockets for ESP32 and Stepper Drivers to allow quick removal/replacement
@@ -18,20 +24,22 @@ This project uses an ESP32-based controller, along with stepper motors and endst
 
 ## Process
 1. Order the custom PCM from the Gerber files in the Circuit Board V2/ directory.
-1. Print 3x Motor Bracket, Motor Cover, Endstop Clip in PLA or PETG (or other hard-plastic).
-1. Print 3x Coupler, Damper and 6x End Holder in TPU (for vibration damping - PLA will work in a pinch though). Metal couplers from a 3d printer kit can also be used.
+1. Print 4x Motor Bracket, Motor Cover, Endstop Clip in PLA or PETG (or other hard-plastic).
+1. Print 4x Coupler, Damper and 8x End Holder in TPU (for vibration damping - PLA will work in a pinch though). Metal couplers from a 3d printer kit can also be used.
 1. Assemble the circuitboard per the KiCad schematic or using the silk screen guides.
-1. Tune the stepper motor current limit (Try this guide: https://www.makerguides.com/a4988-stepper-motor-driver-arduino-tutorial/).
-    * Using USB for power (do not plug in the power supply for this).
 1. Set the ventNames, microStepping, WiFi parameters in the firmware (see AC_Vent/README_CONFIG.md for details).
 1. Compile and flash the firmware onto your ESP32 dev board using Arduino IDE.
     * Using USB for power (do not plug in the power supply for this).
     * NOTE: Setup Arduino IDE with ESP32 library like this: https://randomnerdtutorials.com/installing-the-esp32-board-in-arduino-ide-windows-instructions/
 1. Bench test by connecting motors and endstop switches.
+    * You may need to switch the red and black wires on your endstop switches (black should be at the edge of the board, and red in the middle).
 1. Connect the power supply to the high-voltage side of the buck convertor. This will power up the ESP32.
+1. Tune the stepper motor current limit (Try this guide: https://www.makerguides.com/a4988-stepper-motor-driver-arduino-tutorial/).
+    * Using USB for power (do not plug in the power supply for this).
 1. On a computer, navigate to the IP Address of the device.
 1. Click to open one of the Vents.
     * It will first spin counter-clockwise to close the vent until the endstop switch is triggered, then clockwise until the limit position is reached.
+	* Note: If the motor spins the wrong direction, simply unplug and reverse it's connector.
 1. Assemble components and install into vents. Tip: use Ethernet cable to extend leads as neccessary (I used RJ45 breakout modules but you could crimp connectors).
 
 Note: There is no security or authentication in this system. Do not open up the port in your Router! For use on your internal network only.
@@ -66,7 +74,9 @@ The return format is identical to the 'get status' request.
 
 
 ## Images
-Note: Images are from the prototype.
+Note: Some photos are from the prototype.
+
+![CircuitBoard_V2](/Sample/CircuitBoard_V2.jpg)
 
 ![AllParts](/Sample/AllParts.jpg)
 
